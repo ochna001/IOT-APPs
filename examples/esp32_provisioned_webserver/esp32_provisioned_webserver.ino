@@ -82,6 +82,7 @@ void handleRootAP() {
   html += "Password: <input name='pass' type='password' /><br/>";
   html += "<button type='submit'>Save & Connect</button>";
   html += "</form></body></html>";
+  server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(200, "text/html", html);
 }
 
@@ -89,6 +90,7 @@ void handleSave() {
   String ssid = server.arg("ssid");
   String pass = server.arg("pass");
   if (ssid.length() == 0) {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
     server.send(400, "text/plain", "Missing ssid");
     return;
   }
@@ -97,6 +99,7 @@ void handleSave() {
   prefs.putString("ssid", ssid);
   prefs.putString("pass", pass);
   prefs.end();
+  server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(200, "text/html", "Saved. Rebooting and attempting to connect...");
   delay(500);
   ESP.restart();
