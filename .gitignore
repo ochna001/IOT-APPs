@@ -1,7 +1,7 @@
 node_modules/
 .expo/
 dist/
-android/
+#android/
 ios/
 .vscode/
 .DS_Store
