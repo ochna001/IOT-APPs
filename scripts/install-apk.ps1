@@ -3,6 +3,8 @@ Installs the debug APK to a connected Android device using adb.
 Usage: .\scripts\install-apk.ps1
 It looks for the debug APK at android\app\build\outputs\apk\debug\app-debug.apk
 Requires adb on PATH.
+
+powershell -ExecutionPolicy Bypass -File .\scripts\install-apk.ps1
 #>
 
 $apk = Join-Path -Path (Get-Location) -ChildPath "android\app\build\outputs\apk\debug\app-debug.apk"
