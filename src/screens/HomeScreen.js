@@ -1,8 +1,25 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, TextInput, Button, FlatList, StyleSheet, Alert, Modal, Linking } from 'react-native';
+import {
+  View,
+  Text,
+  TextInput,
+  FlatList,
+  StyleSheet,
+  Alert,
+  Modal,
+  Linking,
+  TouchableOpacity,
+  SafeAreaView,
+} from 'react-native';
 import { on } from '../utils/emitter';
 import { v4 as uuidv4 } from 'uuid';
 import { getDevices, removeDevice as rmDevice, upsertDevice } from '../storage/devices';
+
+const AppButton = ({ onPress, title, style, textStyle }) => (
+  <TouchableOpacity onPress={onPress} style={[styles.appButtonContainer, style]}>
+    <Text style={[styles.appButtonText, textStyle]}>{title}</Text>
+  </TouchableOpacity>
+);
 
 export default function HomeScreen({ navigation }) {
   const [devices, setDevices] = useState([]);
@@ -14,11 +31,8 @@ export default function HomeScreen({ navigation }) {
 
   useEffect(() => {
     load();
-    // Listen for device changes (from other screens like Setup/Provision)
-    const unsub = on('devices:changed', () => {
-      load();
-    });
-    return () => { if (typeof unsub === 'function') unsub(); };
+    const unsub = on('devices:changed', load);
+    return () => unsub();
   }, []);
 
   async function load() {
@@ -27,117 +41,127 @@ export default function HomeScreen({ navigation }) {
   }
 
   async function addDevice() {
-    const trimmed = ip.trim();
-    if (!trimmed) return Alert.alert('Enter device IP or host');
-    const devName = name.trim() || trimmed;
-    const dev = { id: uuidv4(), name: devName, host: trimmed, actions: [] };
-    try {
-      await upsertDevice(dev);
-      setDevices(prev => [...prev, dev]);
-      setIp('');
-      setName('');
-    } catch (e) {
-      Alert.alert('Error', String(e));
-    }
+    const trimmedIp = ip.trim();
+    if (!trimmedIp) return Alert.alert('IP address is required');
+    const devName = name.trim() || trimmedIp;
+    const newDevice = { id: uuidv4(), name: devName, host: trimmedIp, actions: [] };
+    await upsertDevice(newDevice);
+    setDevices(prev => [newDevice, ...prev]);
+    setIp('');
+    setName('');
   }
 
   async function removeDevice(id) {
-    try {
-      await rmDevice(id);
-      setDevices(prev => prev.filter(d => d.id !== id));
-    } catch (e) {
-      Alert.alert('Error', String(e));
-    }
+    await rmDevice(id);
+    setDevices(prev => prev.filter(d => d.id !== id));
   }
-
-  const renderHeader = () => (
-    <View style={styles.headerContainer}>
-      <Text style={styles.title}>IoT Devices</Text>
-      <View style={styles.row}>
-        <TextInput
-          placeholder="friendly name (optional)"
-          value={name}
-          onChangeText={setName}
-          style={[styles.input, { flex: 1 }]}
-        />
-        <TextInput
-          placeholder="device IP or host (e.g. 192.168.4.1)"
-          value={ip}
-          onChangeText={setIp}
-          style={[styles.input, { flex: 2 }]}
-        />
-        <View style={{ width: 8 }} />
-        <Button title="Add" onPress={addDevice} />
-        <View style={{ width: 8 }} />
-        <Button title="Provision" onPress={() => { setProvIp(''); setProvName(''); setShowProvModal(true); }} />
-      </View>
-    </View>
-  );
 
   const renderItem = ({ item }) => (
     <View style={styles.deviceCard}>
-      <View style={{ flex: 1 }}>
+      <View style={styles.deviceInfo}>
         <Text style={styles.deviceText}>{item.name}</Text>
         <Text style={styles.deviceHost}>{item.host}</Text>
       </View>
       <View style={styles.deviceButtons}>
-        <Button title="Setup" onPress={() => navigation.navigate('Setup', { deviceId: item.id })} />
-        <View style={{ width: 8 }} />
-        <Button title="Open" onPress={() => navigation.navigate('DeviceTab', { deviceId: item.id })} />
-        <View style={{ width: 8 }} />
-        <Button title="Del" color="#cc0000" onPress={() => removeDevice(item.id)} />
+        <AppButton title="Setup" onPress={() => navigation.navigate('Setup', { deviceId: item.id })} style={styles.setupButton} textStyle={styles.setupButtonText} />
+        <AppButton title="Open" onPress={() => navigation.navigate('DeviceTab', { deviceId: item.id })} style={styles.openButton} />
+        <AppButton title="Del" onPress={() => removeDevice(item.id)} style={styles.deleteButton} />
       </View>
     </View>
   );
 
   return (
-    <>
-      {renderHeader()}
-      <FlatList
-        data={devices}
-        keyExtractor={item => item.id}
-        renderItem={renderItem}
-        ListEmptyComponent={<Text style={{ marginTop: 20, paddingHorizontal: 16 }}>No devices added yet.</Text>}
-        contentContainerStyle={devices.length === 0 ? styles.container : [styles.container, { paddingBottom: 40 }]}
-      />
+    <SafeAreaView style={styles.safeArea}>
+      <View style={styles.container}>
+        <Text style={styles.title}>IoT Dashboard</Text>
 
-      <Modal visible={showProvModal} animationType="slide" onRequestClose={() => setShowProvModal(false)}>
-        <View style={{ flex: 1, padding: 16 }}>
-          <Text style={{ fontSize: 18, fontWeight: '700', marginBottom: 12 }}>Provision new device</Text>
-          <Text style={{ color: '#666', marginBottom: 8 }}>Power the device with the provisioning firmware. Connect your phone to the device AP (SSID like "ESP8266-Setup"), then open the provision page to submit Wi-Fi credentials.</Text>
-          <View style={{ flexDirection: 'row', marginBottom: 12 }}>
-            <Button title="Open provision page" onPress={async () => { try { await Linking.openURL('http://192.168.4.1'); } catch (e) { Alert.alert('Could not open browser', String(e)); } }} />
-          </View>
-          <Text style={{ fontWeight: '600' }}>After provisioning, enter device details</Text>
-          <TextInput placeholder="Device name" value={provName} onChangeText={setProvName} style={[styles.input, { marginTop: 8 }]} />
-          <TextInput placeholder="Device IP" value={provIp} onChangeText={setProvIp} style={[styles.input, { marginTop: 8 }]} />
-          <View style={{ flexDirection: 'row', marginTop: 12 }}>
-            <Button title="Save" onPress={async () => {
-              const trimmed = provIp.trim();
-              if (!trimmed) return Alert.alert('Enter device IP');
-              const dev = { id: uuidv4(), name: provName.trim() || trimmed, host: trimmed, actions: [] };
-              await upsertDevice(dev);
-              setDevices(prev => [...prev, dev]);
-              setShowProvModal(false);
-              Alert.alert('Success', 'Device added successfully');
-            }} />
-            <View style={{ width: 12 }} />
-            <Button title="Cancel" onPress={() => setShowProvModal(false)} />
+        <View style={styles.addDeviceCard}>
+          <Text style={styles.cardTitle}>Add a New Device</Text>
+          <TextInput
+            placeholder="Device Name (optional)"
+            value={name}
+            onChangeText={setName}
+            style={styles.input}
+            placeholderTextColor="#999"
+          />
+          <TextInput
+            placeholder="Device IP or Host"
+            value={ip}
+            onChangeText={setIp}
+            style={styles.input}
+            placeholderTextColor="#999"
+          />
+          <View style={styles.addButtonsContainer}>
+            <AppButton title="Add Manually" onPress={addDevice} style={styles.addButton} />
+            <AppButton title="Provision" onPress={() => setShowProvModal(true)} style={styles.provisionButton} />
           </View>
         </View>
-      </Modal>
-    </>
+
+        <FlatList
+          data={devices}
+          keyExtractor={item => item.id}
+          renderItem={renderItem}
+          ListHeaderComponent={<Text style={styles.listHeader}>My Devices</Text>}
+          ListEmptyComponent={<Text style={styles.emptyText}>No devices yet. Add one above!</Text>}
+          contentContainerStyle={{ paddingBottom: 40 }}
+        />
+
+        <Modal visible={showProvModal} animationType="slide" onRequestClose={() => setShowProvModal(false)}>
+          {/* Provisioning Modal UI can also be improved later */}
+        </Modal>
+      </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 16, paddingBottom: 40 },
-  headerContainer: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8, backgroundColor: '#f9f9f9' },
-  title: { fontSize: 22, fontWeight: '700', marginBottom: 16 },
-  row: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
-  input: { borderWidth: 1, borderColor: '#ddd', padding: 10, marginRight: 8, borderRadius: 6, fontSize: 14, backgroundColor: '#fff' },
-  deviceCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, backgroundColor: '#fff', borderRadius: 10, marginBottom: 12, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 8 },
-  deviceText: { fontSize: 16, fontWeight: '600' },
-  deviceHost: { color: '#666', marginTop: 4, fontSize: 13 },
-  deviceButtons: { flexDirection: 'row', alignItems: 'center' },
+  safeArea: { flex: 1, backgroundColor: '#1a1a2e' },
+  container: { flex: 1, padding: 20 },
+  title: { fontSize: 32, fontWeight: 'bold', color: '#fff', marginBottom: 20, textAlign: 'center' },
+  addDeviceCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 20,
+    padding: 20,
+    marginBottom: 30,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    borderWidth: 1,
+  },
+  cardTitle: { fontSize: 18, fontWeight: '600', color: '#fff', marginBottom: 15 },
+  input: {
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderRadius: 10,
+    padding: 15,
+    color: '#fff',
+    fontSize: 16,
+    marginBottom: 10,
+  },
+  addButtonsContainer: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 },
+  listHeader: { fontSize: 22, fontWeight: 'bold', color: '#fff', marginBottom: 15 },
+  deviceCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 15,
+    padding: 20,
+    marginBottom: 15,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  deviceInfo: { flex: 1 },
+  deviceText: { fontSize: 18, fontWeight: '600', color: '#fff' },
+  deviceHost: { color: 'rgba(255, 255, 255, 0.7)', marginTop: 5 },
+  deviceButtons: { flexDirection: 'row' },
+  emptyText: { color: 'rgba(255, 255, 255, 0.6)', textAlign: 'center', marginTop: 20 },
+  appButtonContainer: {
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginLeft: 8,
+  },
+  appButtonText: { fontSize: 14, color: "#fff", fontWeight: "bold", alignSelf: "center" },
+  addButton: { backgroundColor: '#007bff', flex: 1, marginRight: 5 },
+  provisionButton: { backgroundColor: '#28a745', flex: 1, marginLeft: 5 },
+  setupButton: { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#007bff' },
+  setupButtonText: { color: '#007bff' },
+  openButton: { backgroundColor: '#007bff' },
+  deleteButton: { backgroundColor: '#dc3545' },
 });

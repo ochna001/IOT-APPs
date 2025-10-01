@@ -26,6 +26,7 @@ String storedSSID = "";
 String storedPass = "";
 
 void sendPlain(int code, const String &body) {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(code, "text/plain", body);
 }
 
@@ -54,6 +55,8 @@ void handleStatus() {
   }
   sendPlain(200, s);
 }
+
+
 
 void startWebServer() {
   server.on("/", handleRoot);

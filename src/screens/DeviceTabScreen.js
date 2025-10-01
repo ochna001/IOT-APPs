@@ -1,18 +1,33 @@
 import React, { useEffect, useState } from 'react';
-import { ScrollView, View, Text, Button, StyleSheet, FlatList, TouchableOpacity, Image } from 'react-native';
+import {
+  ScrollView,
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  Image,
+  ImageBackground,
+  SafeAreaView,
+  ActivityIndicator,
+} from 'react-native';
 import { getDeviceById } from '../storage/devices';
 import { on } from '../utils/emitter';
+import { initMQTT, subscribeToTopic, unsubscribeFromTopic } from '../api/mqtt';
+
+const bgImage = require('../../imagee/SOLbg.jpg');
+const logoImage = require('../../imagee/SOLlogo.png');
 
 function ActionButton({ action, onPress }) {
   const isUri = typeof action.icon === 'string' && (action.icon.startsWith('http') || action.icon.startsWith('file') || action.icon.startsWith('data'));
   return (
-    <TouchableOpacity style={[styles.actionButton, { backgroundColor: action.color || '#0a84ff' }]} onPress={() => onPress(action.path)}>
+    <TouchableOpacity style={[styles.actionButton, { backgroundColor: action.color || 'rgba(0, 122, 255, 0.8)' }]} onPress={() => onPress(action.path)}>
       {isUri ? (
-        <Image source={{ uri: action.icon }} style={styles.actionImage} />
+        <Image source={{ uri: action.icon }} style={styles.actionIcon} />
       ) : (
-        <Text style={styles.actionEmoji}>{action.icon || '🔘'}</Text>
+        <Text style={styles.actionIconText}>{action.icon || '🔘'}</Text>
       )}
-      <Text style={styles.actionText}>{action.name}</Text>
+      <Text style={styles.actionButtonText}>{action.name}</Text>
     </TouchableOpacity>
   );
 }
@@ -22,115 +37,174 @@ export default function DeviceTabScreen({ route }) {
   const [device, setDevice] = useState(null);
   const [lastResponse, setLastResponse] = useState('');
   const [history, setHistory] = useState([]);
-  useEffect(() => {
+  const [ledStatus, setLedStatus] = useState('Unknown');
+
+    useEffect(() => {
     if (!deviceId) return;
-    (async () => {
-      const d = await getDeviceById(deviceId);
-      setDevice(d);
-    })();
+
+    // Listener for local device data changes (e.g., from SetupScreen)
     const unsub = on('devices:changed', async () => {
       const d = await getDeviceById(deviceId);
       setDevice(d);
     });
-    return () => { if (typeof unsub === 'function') unsub(); };
+
+    // MQTT setup for real-time status updates
+    const topic = `iot-app/${deviceId}/status`;
+    const handleMessage = (msgTopic, payload) => {
+      if (msgTopic === topic && (payload === 'ON' || payload === 'OFF')) {
+        setLedStatus(payload);
+      }
+    };
+
+    initMQTT(handleMessage);
+    subscribeToTopic(topic);
+
+    // Cleanup function
+    return () => {
+      if (typeof unsub === 'function') unsub();
+      unsubscribeFromTopic(topic);
+    };
+  }, [deviceId]);
+
+  // Effect to load initial device data
+  useEffect(() => {
+    if (deviceId) {
+      getDeviceById(deviceId).then(setDevice);
+    }
   }, [deviceId]);
 
   async function callPath(path) {
-    setLastResponse('calling ' + path + '...');
-    if (!device || !device.host) return setLastResponse('error: device host not set');
+    setLastResponse('Calling ' + path + '...');
+    if (!device || !device.host) return setLastResponse('Error: device host not set');
     try {
-      // normalize host (remove trailing slashes, strip protocol if provided)
-      let host = device.host.trim();
-      // if user saved host including http(s)://, remove it for safe prefixing
-      host = host.replace(/^https?:\/\//i, '').replace(/\/+$/,'');
-      const p = String(path || '').trim().replace(/^\/+/, '');
-      const encodedPath = encodeURI(p);
-      const url = `http://${host}/${encodedPath}`;
-      setLastResponse('calling url: ' + url);
+      let host = device.host.trim().replace(/^https?:\/\//i, '').replace(/\/+$/,'');
+      const p = String(path || '').trim().replace(/^\/+/,'');
+      const url = `http://${host}/${encodeURI(p)}`;
+      setLastResponse(`Calling: ${url}`);
       const r = await fetch(url);
       const text = await r.text();
-      // try to parse JSON
+      // Handle plain text ON/OFF for LED status
+      if (text.trim() === 'ON' || text.trim() === 'OFF') {
+        setLedStatus(text.trim());
+        setLastResponse('LED status updated.');
+        return;
+      }
+      // Try to parse JSON for sensor readings
       try {
         const j = JSON.parse(text);
-        // if single reading
         if (j.temperature !== undefined) {
-          const entry = { ts: Date.now(), temperature: j.temperature };
+          const entry = { ts: Date.now(), temperature: j.temperature, humidity: j.humidity };
           setHistory(h => [entry, ...h].slice(0, 60));
         }
         setLastResponse(JSON.stringify(j, null, 2));
       } catch (e) {
-        // handle simple ON/OFF text responses from simple firmware
-        const t = text && text.toString();
-        if (t === 'ON' || t === 'OFF') {
-          setLastResponse('device: ' + t + ' (url: ' + url + ')');
-        } else {
-          setLastResponse(t || '');
-        }
+        setLastResponse(text || 'Received empty response.');
       }
     } catch (e) {
-      setLastResponse('error: ' + (e.message || e.toString()));
+      setLastResponse('Error: ' + (e.message || e.toString()));
     }
   }
 
-  if (!deviceId) return <View style={styles.center}><Text>Missing device id. Open Device from the list.</Text></View>;
-  if (!device) return <View style={styles.center}><Text>Loading...</Text></View>;
+  if (!deviceId) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.errorText}>Missing device ID.</Text>
+      </View>
+    );
+  }
+
+  if (!device) {
+    return (
+      <ImageBackground source={bgImage} style={styles.bgImage} blurRadius={5}>
+        <View style={styles.center}>
+          <ActivityIndicator size="large" color="#fff" />
+        </View>
+      </ImageBackground>
+    );
+  }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>{device.name}</Text>
-        <Text style={styles.subtitle}>{device.host}</Text>
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Actions</Text>
-        <FlatList data={device.actions||[]} keyExtractor={i=>i.id} horizontal renderItem={({item}) => (
-          <ActionButton action={item} onPress={callPath} />
-        )} ListEmptyComponent={<Text style={{color:'#666'}}>No actions yet</Text>} />
-      </View>
-
-      <View style={styles.card}>
-        <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-          <Text style={styles.cardTitle}>Sensor / Status</Text>
-          <Button title="Refresh" onPress={() => callPath('sensor/temperature')} />
-        </View>
-
-        { /* If JSON contains temperature/humidity show cards */ }
-        {history.length > 0 ? (
-          <View style={{flexDirection:'row',marginTop:12}}>
-            <View style={styles.sensorCard}>
-              <Text style={{fontWeight:'600',fontSize:14}}>Temperature</Text>
-              <Text style={{fontSize:20,fontWeight:'700',marginTop:4}}>{history[0].temperature} °C</Text>
-              <Text style={{color:'#666',fontSize:12,marginTop:4}}>{new Date(history[0].ts).toLocaleTimeString()}</Text>
+    <ImageBackground source={bgImage} style={styles.bgImage} blurRadius={10}>
+      <SafeAreaView style={styles.safeArea}>
+        <ScrollView contentContainerStyle={styles.container}>
+          <View style={styles.header}>
+            <Image source={logoImage} style={styles.logo} />
+            <View>
+              <Text style={styles.title}>{device.name}</Text>
+              <Text style={styles.subtitle}>{device.host}</Text>
             </View>
-            {history[0].humidity !== undefined && (
-              <View style={[styles.sensorCard,{marginLeft:12}]}> 
-                <Text style={{fontWeight:'600',fontSize:14}}>Humidity</Text>
-                <Text style={{fontSize:20,fontWeight:'700',marginTop:4}}>{history[0].humidity} %</Text>
-                <Text style={{color:'#666',fontSize:12,marginTop:4}}>{new Date(history[0].ts).toLocaleTimeString()}</Text>
-              </View>
-            )}
           </View>
-        ) : (
-          <Text style={{color:'#333',marginTop:8,fontSize:14}}>{lastResponse || 'No recent reading'}</Text>
-        )}
-      </View>
 
-    </ScrollView>
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Actions</Text>
+            <FlatList
+              data={device.actions || []}
+              keyExtractor={i => i.id}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              renderItem={({ item }) => <ActionButton action={item} onPress={callPath} />}
+              ListEmptyComponent={<Text style={styles.emptyText}>No actions configured.</Text>}
+            />
+          </View>
+
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <Text style={styles.cardTitle}>Sensor / Status</Text>
+              <TouchableOpacity onPress={() => callPath('status')} style={styles.refreshButton}>
+                <Text style={styles.refreshButtonText}>Refresh</Text>
+              </TouchableOpacity>
+            </View>
+
+                        <View style={styles.statusContainer}>
+              {history.length > 0 && (
+                <View style={styles.statusRow}>
+                  <Text style={styles.statusLabel}>Temperature</Text>
+                  <View style={styles.statusValueWrapper}>
+                    <Text style={styles.statusValue}>{history[0].temperature}°C</Text>
+                    <Text style={styles.statusTime}>{new Date(history[0].ts).toLocaleTimeString()}</Text>
+                  </View>
+                </View>
+              )}
+              <View style={styles.statusRow}>
+                <Text style={styles.statusLabel}>LED Status</Text>
+                <View style={styles.statusValueWrapper}>
+                  <Text style={[styles.statusValue, {color: ledStatus === 'ON' ? '#28a745' : '#dc3545'}]}>{ledStatus}</Text>
+                </View>
+              </View>
+            </View>
+            <Text style={styles.responseText}>{lastResponse}</Text>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 16, paddingBottom: 40 },
-  center: { flex:1, justifyContent:'center', alignItems:'center' },
-  header: { marginBottom: 16 },
-  title: { fontSize: 22, fontWeight: '700' },
-  subtitle: { color: '#666', fontSize: 13, marginTop: 4 },
-  card: { backgroundColor:'#fff', padding:16, borderRadius:10, marginBottom:12, shadowColor:'#000', shadowOpacity:0.05, shadowRadius:8 },
-  cardTitle: { fontWeight:'600', marginBottom:10, fontSize: 15 },
-  actionButton: { backgroundColor:'#0a84ff', paddingVertical:12, paddingHorizontal:16, borderRadius:10, marginRight:8, flexDirection:'row', alignItems:'center' },
-  actionText: { color:'#fff', fontWeight:'600', marginLeft:8, fontSize: 14 },
-  actionEmoji: { fontSize:20 },
-  actionImage: { width:28, height:28, borderRadius:6 },
-  sensorCard: { flex:1, backgroundColor:'#f5f5f5', padding:12, borderRadius:8 }
+  bgImage: { flex: 1 },
+  safeArea: { flex: 1 },
+  container: { padding: 20, paddingBottom: 60 },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  errorText: { color: '#ff4444', fontSize: 16 },
+  header: { flexDirection: 'row', alignItems: 'center', marginBottom: 30 },
+  logo: { width: 50, height: 50, marginRight: 15, borderRadius: 25 },
+  title: { fontSize: 28, fontWeight: 'bold', color: '#fff' },
+  subtitle: { color: 'rgba(255, 255, 255, 0.7)', fontSize: 14, marginTop: 2 },
+  card: { backgroundColor: 'rgba(0, 0, 0, 0.3)', borderRadius: 20, padding: 20, marginBottom: 20, borderColor: 'rgba(255, 255, 255, 0.2)', borderWidth: 1 },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
+  cardTitle: { fontSize: 18, fontWeight: '600', color: '#fff' },
+  emptyText: { color: 'rgba(255, 255, 255, 0.6)', fontSize: 14, marginTop: 10 },
+  actionButton: { paddingVertical: 12, paddingHorizontal: 20, borderRadius: 15, marginRight: 10, alignItems: 'center', justifyContent: 'center', minWidth: 100 },
+  actionIcon: { width: 24, height: 24, marginBottom: 5 },
+  actionIconText: { fontSize: 24, marginBottom: 5, color: '#fff' },
+  actionButtonText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+  refreshButton: { backgroundColor: 'rgba(0, 122, 255, 0.7)', paddingVertical: 8, paddingHorizontal: 15, borderRadius: 10 },
+  refreshButtonText: { color: '#fff', fontWeight: '600' },
+  statusContainer: { backgroundColor: 'rgba(0, 0, 0, 0.2)', padding: 15, borderRadius: 15 },
+  statusRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(255, 255, 255, 0.1)' },
+  statusLabel: { fontSize: 18, fontWeight: '600', color: 'rgba(255, 255, 255, 0.9)' },
+  statusValueWrapper: { alignItems: 'flex-end' },
+  statusValue: { fontSize: 16, fontWeight: 'bold', color: '#fff' },
+  statusTime: { fontSize: 12, color: 'rgba(255, 255, 255, 0.5)', marginTop: 2 },
+  responseText: { color: '#aaa', fontSize: 12, marginTop: 15, textAlign: 'center' },
 });
