@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { ScrollView, View, Text, TextInput, Button, StyleSheet, Alert, TouchableOpacity, Image, KeyboardAvoidingView, Platform } from 'react-native';
+import { ScrollView, View, Text, TextInput, Button, StyleSheet, Alert, TouchableOpacity, Image, KeyboardAvoidingView, Platform, Modal } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { getDeviceById, upsertDevice } from '../storage/devices';
+import { on } from '../utils/emitter';
 
 const COLORS = ['#0a84ff','#ff9500','#34c759','#ff3b30','#5856d6'];
 const ICONS = [
@@ -15,7 +16,7 @@ const ICONS = [
 ];
 
 export default function SetupScreen({ route, navigation }) {
-  const { deviceId } = route.params;
+  const deviceId = route?.params?.deviceId;
   const [device, setDevice] = useState(null);
   const [actionName, setActionName] = useState('');
   const [actionPath, setActionPath] = useState('');
@@ -23,14 +24,23 @@ export default function SetupScreen({ route, navigation }) {
   // actionIcon is always a string: either an emoji or a URI
   const [actionIcon, setActionIcon] = useState(ICONS[0].emoji);
   const [editingId, setEditingId] = useState(null);
-  
+  const [showProvModal, setShowProvModal] = useState(false);
+  const [provIp, setProvIp] = useState('');
 
   useEffect(() => {
-    (async () => {
-      const d = await getDeviceById(deviceId);
-      setDevice(d || { actions: [] });
-    })();
+    if (!deviceId) return;
+    loadDevice();
+    // Listen for device changes from storage
+    const unsub = on('devices:changed', () => {
+      loadDevice();
+    });
+    return () => { if (typeof unsub === 'function') unsub(); };
   }, [deviceId]);
+
+  async function loadDevice() {
+    const d = await getDeviceById(deviceId);
+    setDevice(d || { actions: [] });
+  }
 
   function normalizePath(p) {
     if (!p) return '';
@@ -75,6 +85,9 @@ export default function SetupScreen({ route, navigation }) {
     setDevice(newDevice);
   }
 
+  if (!deviceId) return (
+    <View style={styles.center}><Text>Missing device id. Open Setup from a device entry.</Text></View>
+  );
   if (!device) return <View style={styles.center}><Text>Loading...</Text></View>;
 
   return (
@@ -84,17 +97,20 @@ export default function SetupScreen({ route, navigation }) {
 
       <View style={styles.card}>
         <Text style={styles.label}>Device</Text>
-        <TextInput placeholder="Device name" value={device.name} onChangeText={(v)=> setDevice({...device,name:v})} style={styles.input} />
-        <TextInput placeholder="Host/IP" value={device.host} onChangeText={(v)=> setDevice({...device,host:v})} style={styles.input} />
-        <Button title="Save device" onPress={async ()=> { await upsertDevice(device); Alert.alert('Saved'); }} />
+  <TextInput placeholder="Device name" value={device.name} onChangeText={v => setDevice({...device,name:v})} style={styles.input} />
+  <TextInput placeholder="Host/IP" value={device.host} onChangeText={v => setDevice({...device,host:v})} style={styles.input} />
+        <Button title="Save device" onPress={async ()=> { 
+          await upsertDevice(device); 
+          Alert.alert('Success', 'Device settings saved'); 
+        }} />
       </View>
 
         
 
       <View style={styles.card}>
         <Text style={styles.label}>Add / Edit Action</Text>
-        <TextInput placeholder="Action name (e.g. Light On)" value={actionName} onChangeText={setActionName} style={styles.input} />
-        <TextInput placeholder="Path (e.g. on or gpio/2/1). Example: 'on'" value={actionPath} onChangeText={setActionPath} style={styles.input} />
+  <TextInput placeholder="Action name (e.g. Light On)" value={actionName} onChangeText={v => setActionName(v)} style={styles.input} />
+  <TextInput placeholder="Path (e.g. on or gpio/2/1). Example: 'on'" value={actionPath} onChangeText={v => setActionPath(v)} style={styles.input} />
         <Text style={{color:'#666',marginBottom:6}}>Path explanation: this is appended to the device host to form http://&lt;host&gt;/&lt;path&gt;. Examples below will prefill the field.</Text>
         <View style={{flexDirection:'row',marginBottom:8}}>
           <Button title="/on" onPress={()=> setActionPath('on')} />
@@ -211,11 +227,11 @@ const styles = StyleSheet.create({
   scroll: { flex: 1 },
   contentContainer: { padding: 16, paddingBottom: 80, flexGrow: 1 },
   center: { flex:1, justifyContent:'center', alignItems:'center' },
-  heading: { fontSize: 20, fontWeight: '600', marginBottom: 12 },
-  card: { backgroundColor: '#fff', borderRadius: 8, padding: 12, marginBottom: 12, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 6 },
-  label: { fontWeight: '600', marginBottom: 8 },
-  input: { borderWidth: 1, borderColor: '#eee', padding: 8, borderRadius: 6, marginBottom: 8 },
-  small: { color: '#666', fontSize: 13, marginBottom: 4 },
-  iconPicker: { padding:6, marginRight:8, borderRadius:6, borderWidth:1, borderColor:'#eee' },
-  colorSwatch: { width:28, height:28, borderRadius:6, marginRight:8 }
+  heading: { fontSize: 22, fontWeight: '700', marginBottom: 16 },
+  card: { backgroundColor: '#fff', borderRadius: 10, padding: 16, marginBottom: 12, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 8 },
+  label: { fontWeight: '600', marginBottom: 10, fontSize: 15 },
+  input: { borderWidth: 1, borderColor: '#ddd', padding: 10, borderRadius: 6, marginBottom: 10, fontSize: 14 },
+  small: { color: '#666', fontSize: 13, marginBottom: 6 },
+  iconPicker: { padding: 8, marginRight: 8, borderRadius: 6, borderWidth: 1, borderColor: '#ddd' },
+  colorSwatch: { width: 32, height: 32, borderRadius: 6, marginRight: 8 }
 });

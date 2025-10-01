@@ -1,22 +1,26 @@
-// Simple JS event emitter for in-app notifications (no native deps)
-const listeners = Object.create(null);
+// Simple event emitter for cross-component communication
+const listeners = {};
 
-export function on(event, cb) {
+export function on(event, callback) {
   if (!listeners[event]) listeners[event] = [];
-  listeners[event].push(cb);
-  return () => off(event, cb);
+  listeners[event].push(callback);
+  
+  // Return unsubscribe function
+  return () => {
+    if (listeners[event]) {
+      listeners[event] = listeners[event].filter(cb => cb !== callback);
+    }
+  };
 }
 
-export function off(event, cb) {
-  if (!listeners[event]) return;
-  listeners[event] = listeners[event].filter(fn => fn !== cb);
-}
-
-export function emit(event, payload) {
-  const list = listeners[event] || [];
-  for (const fn of list.slice()) {
-    try { fn(payload); } catch (e) { console.warn('emitter handler error', e); }
+export function emit(event, data) {
+  if (listeners[event]) {
+    listeners[event].forEach(callback => {
+      try {
+        callback(data);
+      } catch (e) {
+        console.warn('Event listener error:', e);
+      }
+    });
   }
 }
-
-export default { on, off, emit };

@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { ScrollView, View, Text, Button, StyleSheet, FlatList, TouchableOpacity } from 'react-native';
+import { ScrollView, View, Text, Button, StyleSheet, FlatList, TouchableOpacity, Image } from 'react-native';
 import { getDeviceById } from '../storage/devices';
-import { Image } from 'react-native';
 import { on } from '../utils/emitter';
 
 function ActionButton({ action, onPress }) {
@@ -19,14 +18,12 @@ function ActionButton({ action, onPress }) {
 }
 
 export default function DeviceTabScreen({ route }) {
-  const { deviceId } = route.params;
+  const deviceId = route?.params?.deviceId;
   const [device, setDevice] = useState(null);
   const [lastResponse, setLastResponse] = useState('');
   const [history, setHistory] = useState([]);
-  const [autoRefresh, setAutoRefresh] = useState(false);
-  const [refreshIntervalMs, setRefreshIntervalMs] = useState(5000);
-
   useEffect(() => {
+    if (!deviceId) return;
     (async () => {
       const d = await getDeviceById(deviceId);
       setDevice(d);
@@ -35,17 +32,8 @@ export default function DeviceTabScreen({ route }) {
       const d = await getDeviceById(deviceId);
       setDevice(d);
     });
-    return unsub;
+    return () => { if (typeof unsub === 'function') unsub(); };
   }, [deviceId]);
-
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const t = setInterval(() => {
-      // try to refresh sensible path
-      callPath('sensor/temperature');
-    }, refreshIntervalMs);
-    return () => clearInterval(t);
-  }, [autoRefresh, refreshIntervalMs, device]);
 
   async function callPath(path) {
     setLastResponse('calling ' + path + '...');
@@ -84,6 +72,7 @@ export default function DeviceTabScreen({ route }) {
     }
   }
 
+  if (!deviceId) return <View style={styles.center}><Text>Missing device id. Open Device from the list.</Text></View>;
   if (!device) return <View style={styles.center}><Text>Loading...</Text></View>;
 
   return (
@@ -101,33 +90,29 @@ export default function DeviceTabScreen({ route }) {
       </View>
 
       <View style={styles.card}>
-        <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center'}}>
+        <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
           <Text style={styles.cardTitle}>Sensor / Status</Text>
-          <View style={{flexDirection:'row',alignItems:'center'}}>
-            <Button title={autoRefresh ? 'Auto ON' : 'Auto OFF'} onPress={() => setAutoRefresh(v => !v)} />
-            <View style={{width:8}} />
-            <Button title="Refresh" onPress={() => callPath('sensor/temperature')} />
-          </View>
+          <Button title="Refresh" onPress={() => callPath('sensor/temperature')} />
         </View>
 
         { /* If JSON contains temperature/humidity show cards */ }
         {history.length > 0 ? (
           <View style={{flexDirection:'row',marginTop:12}}>
             <View style={styles.sensorCard}>
-              <Text style={{fontWeight:'600'}}>Temperature</Text>
-              <Text style={{fontSize:18}}>{history[0].temperature} °C</Text>
-              <Text style={{color:'#666',fontSize:12}}>{new Date(history[0].ts).toLocaleTimeString()}</Text>
+              <Text style={{fontWeight:'600',fontSize:14}}>Temperature</Text>
+              <Text style={{fontSize:20,fontWeight:'700',marginTop:4}}>{history[0].temperature} °C</Text>
+              <Text style={{color:'#666',fontSize:12,marginTop:4}}>{new Date(history[0].ts).toLocaleTimeString()}</Text>
             </View>
             {history[0].humidity !== undefined && (
               <View style={[styles.sensorCard,{marginLeft:12}]}> 
-                <Text style={{fontWeight:'600'}}>Humidity</Text>
-                <Text style={{fontSize:18}}>{history[0].humidity} %</Text>
-                <Text style={{color:'#666',fontSize:12}}>{new Date(history[0].ts).toLocaleTimeString()}</Text>
+                <Text style={{fontWeight:'600',fontSize:14}}>Humidity</Text>
+                <Text style={{fontSize:20,fontWeight:'700',marginTop:4}}>{history[0].humidity} %</Text>
+                <Text style={{color:'#666',fontSize:12,marginTop:4}}>{new Date(history[0].ts).toLocaleTimeString()}</Text>
               </View>
             )}
           </View>
         ) : (
-          <Text style={{color:'#333',marginTop:8}}>{lastResponse || 'No recent reading'}</Text>
+          <Text style={{color:'#333',marginTop:8,fontSize:14}}>{lastResponse || 'No recent reading'}</Text>
         )}
       </View>
 
@@ -138,13 +123,14 @@ export default function DeviceTabScreen({ route }) {
 const styles = StyleSheet.create({
   container: { padding: 16, paddingBottom: 40 },
   center: { flex:1, justifyContent:'center', alignItems:'center' },
-  header: { marginBottom: 12 },
-  title: { fontSize: 20, fontWeight: '700' },
-  subtitle: { color: '#666' },
-  card: { backgroundColor:'#fff', padding:14, borderRadius:10, marginBottom:12, shadowColor:'#000', shadowOpacity:0.06, shadowRadius:8 },
-  cardTitle: { fontWeight:'600', marginBottom:8 },
-  actionButton: { backgroundColor:'#0a84ff', paddingVertical:10, paddingHorizontal:16, borderRadius:10, marginRight:8, flexDirection:'row', alignItems:'center' },
-  actionText: { color:'#fff', fontWeight:'600', marginLeft:8 },
-  actionEmoji: { fontSize:18 },
-  actionImage: { width:26, height:26, borderRadius:6 }
+  header: { marginBottom: 16 },
+  title: { fontSize: 22, fontWeight: '700' },
+  subtitle: { color: '#666', fontSize: 13, marginTop: 4 },
+  card: { backgroundColor:'#fff', padding:16, borderRadius:10, marginBottom:12, shadowColor:'#000', shadowOpacity:0.05, shadowRadius:8 },
+  cardTitle: { fontWeight:'600', marginBottom:10, fontSize: 15 },
+  actionButton: { backgroundColor:'#0a84ff', paddingVertical:12, paddingHorizontal:16, borderRadius:10, marginRight:8, flexDirection:'row', alignItems:'center' },
+  actionText: { color:'#fff', fontWeight:'600', marginLeft:8, fontSize: 14 },
+  actionEmoji: { fontSize:20 },
+  actionImage: { width:28, height:28, borderRadius:6 },
+  sensorCard: { flex:1, backgroundColor:'#f5f5f5', padding:12, borderRadius:8 }
 });
