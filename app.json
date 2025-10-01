@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "IoT ESP32 Controller",
+    "slug": "iot-esp32-controller",
+    "version": "0.1.0",
+    "sdkVersion": "48.0.0",
+    "platforms": ["ios", "android", "web"],
+    "android": {
+      "package": "com.kenji.iotcontroller",
+      "versionCode": 1
+    }
+  }
+}
