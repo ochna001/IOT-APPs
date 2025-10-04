@@ -10,7 +10,18 @@ import {
   ImageBackground,
   SafeAreaView,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+// Import manipulator only if available, with fallback
+let manipulateAsync, SaveFormat;
+try {
+  const ImageManipulator = require('expo-image-manipulator');
+  manipulateAsync = ImageManipulator.manipulateAsync;
+  SaveFormat = ImageManipulator.SaveFormat;
+} catch (e) {
+  console.log('Image manipulator not available:', e);
+}
 import { getDeviceById } from '../storage/devices';
 import { on } from '../utils/emitter';
 import { initMQTT, subscribeToTopic, unsubscribeFromTopic } from '../api/mqtt';
@@ -32,7 +43,7 @@ function ActionButton({ action, onPress }) {
   );
 }
 
-export default function DeviceTabScreen({ route }) {
+export default function DeviceTabScreen_Enhanced({ route }) {
   const deviceId = route?.params?.deviceId;
   const [device, setDevice] = useState(null);
   const [lastResponse, setLastResponse] = useState('');
@@ -43,18 +54,16 @@ export default function DeviceTabScreen({ route }) {
   const [motionStatus, setMotionStatus] = useState('unknown');
   const [lastUpdate, setLastUpdate] = useState(null);
   const [lastMotionUpdate, setLastMotionUpdate] = useState(null);
-  const [motionHistory, setMotionHistory] = useState([]);
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
     if (!deviceId) return;
 
-    // Listener for local device data changes (e.g., from SetupScreen)
     const unsub = on('devices:changed', async () => {
       const d = await getDeviceById(deviceId);
       setDevice(d);
     });
 
-    // MQTT setup for real-time status updates
     const topic = `iot-app/${deviceId}/status`;
     const handleMessage = (msgTopic, payload) => {
       if (msgTopic === topic && (payload === 'ON' || payload === 'OFF')) {
@@ -65,47 +74,33 @@ export default function DeviceTabScreen({ route }) {
     initMQTT(handleMessage);
     subscribeToTopic(topic);
 
-    // Cleanup function
     return () => {
       if (typeof unsub === 'function') unsub();
       unsubscribeFromTopic(topic);
     };
   }, [deviceId]);
 
-  // Effect to load initial device data
   useEffect(() => {
     if (deviceId) {
       getDeviceById(deviceId).then(setDevice);
     }
   }, [deviceId]);
 
-  // Auto-refresh DHT sensor every 5 seconds
   useEffect(() => {
     if (!device || !device.host) return;
-    
-    // Initial fetch
     fetchDHTData();
-    
-    // Set up interval for auto-refresh
     const interval = setInterval(() => {
       fetchDHTData();
     }, 5000);
-    
     return () => clearInterval(interval);
   }, [device]);
 
-  // Auto-refresh PIR sensor every 2 seconds
   useEffect(() => {
     if (!device || !device.host) return;
-    
-    // Initial fetch
     fetchPIRData();
-    
-    // Set up interval for auto-refresh
     const interval = setInterval(() => {
       fetchPIRData();
     }, 2000);
-    
     return () => clearInterval(interval);
   }, [device]);
 
@@ -117,7 +112,6 @@ export default function DeviceTabScreen({ route }) {
       const r = await fetch(url);
       const text = await r.text();
       
-      // Parse DHT response format: "temperature:25.3\nhumidity:60.2"
       const lines = text.split('\n');
       let temp = null;
       let hum = null;
@@ -136,8 +130,6 @@ export default function DeviceTabScreen({ route }) {
         setTemperature(temp);
         setHumidity(hum);
         setLastUpdate(Date.now());
-        
-        // Add to history for tracking
         const entry = { ts: Date.now(), temperature: temp, humidity: hum };
         setHistory(h => [entry, ...h].slice(0, 60));
       }
@@ -154,7 +146,6 @@ export default function DeviceTabScreen({ route }) {
       const r = await fetch(url);
       const text = await r.text();
       
-      // Parse PIR response format: "motion:detected" or "motion:none"
       const parts = text.trim().split(':');
       if (parts.length === 2 && parts[0].toLowerCase() === 'motion') {
         const status = parts[1].trim().toLowerCase();
@@ -177,28 +168,24 @@ export default function DeviceTabScreen({ route }) {
       const r = await fetch(url);
       const text = await r.text();
       
-      // Handle plain text ON/OFF for LED status
       if (text.trim() === 'ON' || text.trim() === 'OFF') {
         setLedStatus(text.trim());
         setLastResponse('LED status updated.');
         return;
       }
       
-      // Handle DHT endpoint response
       if (path === 'dht') {
         await fetchDHTData();
         setLastResponse('DHT data refreshed.');
         return;
       }
       
-      // Handle PIR endpoint response
       if (path === 'pir') {
         await fetchPIRData();
         setLastResponse('PIR data refreshed.');
         return;
       }
       
-      // Try to parse JSON for other responses
       try {
         const j = JSON.parse(text);
         setLastResponse(JSON.stringify(j, null, 2));
@@ -207,6 +194,208 @@ export default function DeviceTabScreen({ route }) {
       }
     } catch (e) {
       setLastResponse('Error: ' + (e.message || e.toString()));
+    }
+  }
+
+  // Convert image to RGB565 format for TFT display
+  async function imageToRGB565(imageUri, width, height) {
+    try {
+      // Resize image to fit TFT screen (320x240 in landscape)
+      const manipResult = await manipulateAsync(
+        imageUri,
+        [{ resize: { width, height } }],
+        { compress: 1, format: SaveFormat.PNG, base64: true }
+      );
+
+      // Convert base64 to RGB565 array
+      const base64Data = manipResult.base64;
+      const response = await fetch(`data:image/png;base64,${base64Data}`);
+      const blob = await response.blob();
+      
+      return manipResult.base64;
+    } catch (error) {
+      console.error('Image conversion error:', error);
+      throw error;
+    }
+  }
+
+  async function pickAndUploadImage() {
+    try {
+      // Request permission
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission needed', 'Please grant photo library access');
+        return;
+      }
+
+      // Pick image
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.8,
+      });
+
+      if (result.canceled) return;
+
+      setUploading(true);
+      setLastResponse('Processing image...');
+
+      // Resize to TFT dimensions (320x240)
+      const resized = await manipulateAsync(
+        result.assets[0].uri,
+        [{ resize: { width: 320, height: 240 } }],
+        { compress: 0.8, format: SaveFormat.JPEG, base64: true }
+      );
+
+      setLastResponse('Uploading to ESP32...');
+
+      // Send to ESP32
+      let host = device.host.trim().replace(/^https?:\/\//i, '').replace(/\/+$/,'');
+      const url = `http://${host}/uploadImage`;
+      
+      const formData = new FormData();
+      formData.append('image', {
+        uri: resized.uri,
+        type: 'image/jpeg',
+        name: 'display.jpg',
+      });
+
+      const response = await fetch(url, {
+        method: 'POST',
+        body: formData,
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+
+      const text = await response.text();
+      setLastResponse(text || 'Image uploaded successfully!');
+      setUploading(false);
+
+    } catch (error) {
+      console.error('Upload error:', error);
+      setLastResponse('Error: ' + error.message);
+      setUploading(false);
+    }
+  }
+
+  // Web-compatible image resizing using Canvas
+  async function resizeImageWeb(uri, maxWidth, maxHeight) {
+    return new Promise((resolve, reject) => {
+      const img = new window.Image();
+      img.crossOrigin = 'anonymous';
+      
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        
+        // Calculate new dimensions maintaining aspect ratio
+        const aspectRatio = width / height;
+        const targetAspect = maxWidth / maxHeight;
+        
+        if (aspectRatio > targetAspect) {
+          // Image is wider than target
+          width = maxWidth;
+          height = maxWidth / aspectRatio;
+        } else {
+          // Image is taller than target
+          height = maxHeight;
+          width = maxHeight * aspectRatio;
+        }
+        
+        // Round to integers
+        width = Math.round(width);
+        height = Math.round(height);
+        
+        canvas.width = width;
+        canvas.height = height;
+        
+        const ctx = canvas.getContext('2d');
+        // Use better image smoothing
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        // Convert to base64 with good quality
+        const base64 = canvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+        resolve(base64);
+      };
+      
+      img.onerror = reject;
+      img.src = uri;
+    });
+  }
+
+  async function sendSimpleImage() {
+    try {
+      setUploading(true);
+      setLastResponse('Sending image data...');
+
+      // Pick image
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.5,
+      });
+
+      if (result.canceled) {
+        setUploading(false);
+        return;
+      }
+
+      setLastResponse('Resizing image to fit display...');
+      
+      // Use web-compatible resizing - resize to TFT screen size (320x240)
+      let base64;
+      try {
+        // Try web canvas method - fit to screen dimensions
+        base64 = await resizeImageWeb(result.assets[0].uri, 320, 240);
+      } catch (e) {
+        // Fallback: try smaller size
+        console.log('Resize failed, trying smaller:', e);
+        try {
+          base64 = await resizeImageWeb(result.assets[0].uri, 160, 120);
+        } catch (e2) {
+          console.log('Resize failed again, using original:', e2);
+          const response = await fetch(result.assets[0].uri);
+          const blob = await response.blob();
+          base64 = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result.split(',')[1]);
+            reader.readAsDataURL(blob);
+          });
+        }
+      }
+
+      // Send base64 data to ESP32
+      let host = device.host.trim().replace(/^https?:\/\//i, '').replace(/\/+$/,'');
+      
+      // Split base64 into chunks (ESP32 has limited memory)
+      const chunkSize = 1000;
+      const totalChunks = Math.ceil(base64.length / chunkSize);
+
+      setLastResponse(`Sending ${totalChunks} chunks...`);
+
+      for (let i = 0; i < totalChunks; i++) {
+        const chunk = base64.substring(i * chunkSize, (i + 1) * chunkSize);
+        const url = `http://${host}/imageChunk?index=${i}&total=${totalChunks}&data=${encodeURIComponent(chunk)}`;
+        
+        await fetch(url);
+        setLastResponse(`Sent chunk ${i + 1}/${totalChunks}`);
+      }
+
+      // Tell ESP32 to display the image
+      await fetch(`http://${host}/displayImage`);
+      setLastResponse('Image displayed!');
+      setUploading(false);
+
+    } catch (error) {
+      console.error('Send error:', error);
+      setLastResponse('Error: ' + error.message);
+      setUploading(false);
     }
   }
 
@@ -250,6 +439,26 @@ export default function DeviceTabScreen({ route }) {
               renderItem={({ item }) => <ActionButton action={item} onPress={callPath} />}
               ListEmptyComponent={<Text style={styles.emptyText}>No actions configured.</Text>}
             />
+          </View>
+
+          {/* Image Upload Section */}
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>🖼️ Display Image</Text>
+            <View style={styles.imageButtonContainer}>
+              <TouchableOpacity 
+                style={[styles.imageButton, uploading && styles.imageButtonDisabled]} 
+                onPress={sendSimpleImage}
+                disabled={uploading}
+              >
+                <Text style={styles.imageButtonIcon}>📸</Text>
+                <Text style={styles.imageButtonText}>
+                  {uploading ? 'Uploading...' : 'Pick & Send Image'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            {uploading && (
+              <ActivityIndicator size="small" color="#fff" style={{ marginTop: 10 }} />
+            )}
           </View>
 
           <View style={styles.card}>
@@ -357,4 +566,26 @@ const styles = StyleSheet.create({
   motionIndicator: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   motionDot: { width: 12, height: 12, borderRadius: 6 },
   responseText: { color: '#aaa', fontSize: 12, marginTop: 15, textAlign: 'center' },
+  imageButtonContainer: { marginTop: 10 },
+  imageButton: {
+    backgroundColor: 'rgba(138, 43, 226, 0.8)',
+    paddingVertical: 15,
+    paddingHorizontal: 20,
+    borderRadius: 15,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  imageButtonDisabled: {
+    opacity: 0.5,
+  },
+  imageButtonIcon: {
+    fontSize: 24,
+    marginRight: 10,
+  },
+  imageButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 16,
+  },
 });

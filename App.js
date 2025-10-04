@@ -4,7 +4,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import HomeScreen from './src/screens/HomeScreen';
 import SetupScreen from './src/screens/SetupScreen';
-import DeviceTabScreen from './src/screens/DeviceTabScreen';
+import DeviceTabScreen_Enhanced from './src/screens/DeviceTabScreen_Enhanced';
 
 const Stack = createNativeStackNavigator();
 
@@ -24,7 +24,7 @@ export default function App() {
       >
         <Stack.Screen name="Home" component={HomeScreen} />
         <Stack.Screen name="Setup" component={SetupScreen} />
-        <Stack.Screen name="DeviceTab" component={DeviceTabScreen} options={{ title: 'Device' }} />
+        <Stack.Screen name="DeviceTab" component={DeviceTabScreen_Enhanced} options={{ title: 'Device' }} />
       </Stack.Navigator>
     </NavigationContainer>
   );
