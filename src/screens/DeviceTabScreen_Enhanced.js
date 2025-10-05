@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   ScrollView,
   View,
@@ -11,9 +11,10 @@ import {
   SafeAreaView,
   ActivityIndicator,
   Alert,
+  RefreshControl,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-// Import manipulator only if available, with fallback
+
 let manipulateAsync, SaveFormat;
 try {
   const ImageManipulator = require('expo-image-manipulator');
@@ -25,6 +26,11 @@ try {
 import { getDeviceById } from '../storage/devices';
 import { on } from '../utils/emitter';
 import { initMQTT, subscribeToTopic, unsubscribeFromTopic } from '../api/mqtt';
+import { 
+  checkIfGifNeedsResize, 
+  getOptimizationSuggestions,
+  formatOptimizationInstructions 
+} from '../utils/gifResizer';
 
 const bgImage = require('../../imagee/SOLbg.jpg');
 const logoImage = require('../../imagee/SOLlogo.png');
@@ -55,6 +61,8 @@ export default function DeviceTabScreen_Enhanced({ route }) {
   const [lastUpdate, setLastUpdate] = useState(null);
   const [lastMotionUpdate, setLastMotionUpdate] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [isPlayingGif, setIsPlayingGif] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     if (!deviceId) return;
@@ -197,135 +205,16 @@ export default function DeviceTabScreen_Enhanced({ route }) {
     }
   }
 
-  // Convert image to RGB565 format for TFT display
-  async function imageToRGB565(imageUri, width, height) {
-    try {
-      // Resize image to fit TFT screen (320x240 in landscape)
-      const manipResult = await manipulateAsync(
-        imageUri,
-        [{ resize: { width, height } }],
-        { compress: 1, format: SaveFormat.PNG, base64: true }
-      );
-
-      // Convert base64 to RGB565 array
-      const base64Data = manipResult.base64;
-      const response = await fetch(`data:image/png;base64,${base64Data}`);
-      const blob = await response.blob();
-      
-      return manipResult.base64;
-    } catch (error) {
-      console.error('Image conversion error:', error);
-      throw error;
+  async function resizeImageMobile(uri, maxWidth, maxHeight) {
+    if (!manipulateAsync) {
+      throw new Error('Image manipulator is not available');
     }
-  }
-
-  async function pickAndUploadImage() {
-    try {
-      // Request permission
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission needed', 'Please grant photo library access');
-        return;
-      }
-
-      // Pick image
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 0.8,
-      });
-
-      if (result.canceled) return;
-
-      setUploading(true);
-      setLastResponse('Processing image...');
-
-      // Resize to TFT dimensions (320x240)
-      const resized = await manipulateAsync(
-        result.assets[0].uri,
-        [{ resize: { width: 320, height: 240 } }],
-        { compress: 0.8, format: SaveFormat.JPEG, base64: true }
-      );
-
-      setLastResponse('Uploading to ESP32...');
-
-      // Send to ESP32
-      let host = device.host.trim().replace(/^https?:\/\//i, '').replace(/\/+$/,'');
-      const url = `http://${host}/uploadImage`;
-      
-      const formData = new FormData();
-      formData.append('image', {
-        uri: resized.uri,
-        type: 'image/jpeg',
-        name: 'display.jpg',
-      });
-
-      const response = await fetch(url, {
-        method: 'POST',
-        body: formData,
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      });
-
-      const text = await response.text();
-      setLastResponse(text || 'Image uploaded successfully!');
-      setUploading(false);
-
-    } catch (error) {
-      console.error('Upload error:', error);
-      setLastResponse('Error: ' + error.message);
-      setUploading(false);
-    }
-  }
-
-  // Web-compatible image resizing using Canvas
-  async function resizeImageWeb(uri, maxWidth, maxHeight) {
-    return new Promise((resolve, reject) => {
-      const img = new window.Image();
-      img.crossOrigin = 'anonymous';
-      
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let width = img.width;
-        let height = img.height;
-        
-        // Calculate new dimensions maintaining aspect ratio
-        const aspectRatio = width / height;
-        const targetAspect = maxWidth / maxHeight;
-        
-        if (aspectRatio > targetAspect) {
-          // Image is wider than target
-          width = maxWidth;
-          height = maxWidth / aspectRatio;
-        } else {
-          // Image is taller than target
-          height = maxHeight;
-          width = maxHeight * aspectRatio;
-        }
-        
-        // Round to integers
-        width = Math.round(width);
-        height = Math.round(height);
-        
-        canvas.width = width;
-        canvas.height = height;
-        
-        const ctx = canvas.getContext('2d');
-        // Use better image smoothing
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(img, 0, 0, width, height);
-        
-        // Convert to base64 with good quality
-        const base64 = canvas.toDataURL('image/jpeg', 0.7).split(',')[1];
-        resolve(base64);
-      };
-      
-      img.onerror = reject;
-      img.src = uri;
-    });
+    const result = await manipulateAsync(
+      uri,
+      [{ resize: { width: maxWidth, height: maxHeight } }],
+      { compress: 0.7, format: SaveFormat.JPEG, base64: true }
+    );
+    return result.base64;
   }
 
   async function sendSimpleImage() {
@@ -333,7 +222,6 @@ export default function DeviceTabScreen_Enhanced({ route }) {
       setUploading(true);
       setLastResponse('Sending image data...');
 
-      // Pick image
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
@@ -348,33 +236,25 @@ export default function DeviceTabScreen_Enhanced({ route }) {
 
       setLastResponse('Resizing image to fit display...');
       
-      // Use web-compatible resizing - resize to TFT screen size (320x240)
       let base64;
       try {
-        // Try web canvas method - fit to screen dimensions
-        base64 = await resizeImageWeb(result.assets[0].uri, 320, 240);
+        base64 = await resizeImageMobile(result.assets[0].uri, 320, 240);
       } catch (e) {
-        // Fallback: try smaller size
-        console.log('Resize failed, trying smaller:', e);
-        try {
-          base64 = await resizeImageWeb(result.assets[0].uri, 160, 120);
-        } catch (e2) {
-          console.log('Resize failed again, using original:', e2);
-          const response = await fetch(result.assets[0].uri);
-          const blob = await response.blob();
-          base64 = await new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result.split(',')[1]);
-            reader.readAsDataURL(blob);
-          });
-        }
+        console.log('Resize failed, falling back to original:', e);
+        const response = await fetch(result.assets[0].uri);
+        const blob = await response.blob();
+        base64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result.split(',')[1]);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
       }
 
-      // Send base64 data to ESP32
       let host = device.host.trim().replace(/^https?:\/\//i, '').replace(/\/+$/,'');
       
-      // Split base64 into chunks (ESP32 has limited memory)
-      const chunkSize = 1000;
+      // Optimal chunk size for ESP32 WebServer URL limit
+      const chunkSize = 1500;
       const totalChunks = Math.ceil(base64.length / chunkSize);
 
       setLastResponse(`Sending ${totalChunks} chunks...`);
@@ -387,7 +267,6 @@ export default function DeviceTabScreen_Enhanced({ route }) {
         setLastResponse(`Sent chunk ${i + 1}/${totalChunks}`);
       }
 
-      // Tell ESP32 to display the image
       await fetch(`http://${host}/displayImage`);
       setLastResponse('Image displayed!');
       setUploading(false);
@@ -396,6 +275,188 @@ export default function DeviceTabScreen_Enhanced({ route }) {
       console.error('Send error:', error);
       setLastResponse('Error: ' + error.message);
       setUploading(false);
+    }
+  }
+
+  async function resizeGif(uri, targetSizeKB = 200) {
+    // For GIFs, we can't directly resize them like images
+    // But we can convert to lower quality or suggest optimization
+    // This is a placeholder - actual GIF resizing requires server-side processing
+    // For now, we'll just return the original URI and let the user know
+    return uri;
+  }
+
+  async function sendGif() {
+    try {
+      setUploading(true);
+      setLastResponse('Selecting GIF...');
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 1.0,
+      });
+
+      if (result.canceled) {
+        setUploading(false);
+        return;
+      }
+
+      const uri = result.assets[0].uri;
+      
+      // Check if it's a GIF
+      if (!uri.toLowerCase().endsWith('.gif')) {
+        Alert.alert('Invalid File', 'Please select a GIF file');
+        setUploading(false);
+        return;
+      }
+
+      setLastResponse('Loading GIF file...');
+      
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      
+      // Check file size
+      const fileSizeKB = Math.round(blob.size / 1024);
+      
+      // Check if GIF needs resizing
+      const resizeCheck = await checkIfGifNeedsResize(uri, 320, 240);
+      
+      if (resizeCheck.needsResize) {
+        const { currentSize, targetSize } = resizeCheck;
+        const message = `GIF is ${currentSize.width}x${currentSize.height}\n` +
+                       `Recommended: ${targetSize.width}x${targetSize.height}\n\n` +
+                       `Large GIFs may play slowly. Optimize at ezgif.com for best results.`;
+        
+        Alert.alert('GIF Size Notice', message, [
+          { text: 'OK, Continue', style: 'default' }
+        ]);
+      }
+      
+      let finalBlob = blob;
+      let wasCompressed = false;
+      
+      // If file is too large, give user options
+      if (blob.size > 150000) {
+        // Show alert and wait for user decision
+        const shouldContinue = await new Promise((resolve) => {
+          Alert.alert(
+            'GIF Too Large', 
+            `This GIF is ${fileSizeKB}KB (limit: 150KB due to ESP32 memory).\n\nOptions:\n• Cancel and optimize at ezgif.com\n• Send anyway (may fail)`,
+            [
+              { 
+                text: 'Cancel', 
+                style: 'cancel', 
+                onPress: () => resolve(false)
+              },
+              { 
+                text: 'Send Anyway', 
+                onPress: () => resolve(true)
+              }
+            ]
+          );
+        });
+        
+        if (!shouldContinue) {
+          setUploading(false);
+          setLastResponse('Upload cancelled');
+          return;
+        }
+        
+        setLastResponse(`Uploading large GIF (${fileSizeKB}KB)...`);
+      } else {
+        setLastResponse(`Loading GIF (${fileSizeKB}KB)...`);
+      }
+      
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(finalBlob);
+      });
+
+      let host = device.host.trim().replace(/^https?:\/\//i, '').replace(/\/+$/,'');
+      
+      // Send file size first so ESP32 can allocate the right amount
+      const actualSize = blob.size;
+      
+      // With POST body, we can use much larger chunks (no URL limit)
+      // 180KB GIF (240KB base64) with 8000 byte chunks = ~30 chunks
+      // This is much faster than GET with URL params
+      const chunkSize = 8000;
+      const totalChunks = Math.ceil(base64.length / chunkSize);
+
+      setLastResponse(`Uploading GIF (${fileSizeKB}KB): 0/${totalChunks} chunks...`);
+
+      for (let i = 0; i < totalChunks; i++) {
+        const chunk = base64.substring(i * chunkSize, (i + 1) * chunkSize);
+        
+        // Use POST with body instead of GET with URL params to avoid URL length limits
+        const url = `http://${host}/gifChunk?index=${i}&total=${totalChunks}`;
+        
+        const chunkResponse = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain',
+          },
+          body: chunk, // Send base64 data in body, not URL
+        });
+        
+        if (!chunkResponse.ok) {
+          const errorText = await chunkResponse.text();
+          throw new Error(`Upload failed at chunk ${i + 1}: ${errorText}`);
+        }
+        
+        // Update progress every 10 chunks or on last chunk
+        if (i % 10 === 0 || i === totalChunks - 1) {
+          setLastResponse(`Uploading: ${i + 1}/${totalChunks} chunks (${Math.round((i + 1) / totalChunks * 100)}%)`);
+        }
+      }
+
+      setLastResponse('Starting GIF playback...');
+      setIsPlayingGif(true);
+      
+      // Start GIF playback (non-blocking on ESP32)
+      const playResponse = await fetch(`http://${host}/playGif`);
+      const playText = await playResponse.text();
+      
+      setLastResponse(wasCompressed ? 'Compressed GIF playing!' : 'GIF is playing on device!');
+      setUploading(false);
+
+    } catch (error) {
+      console.error('GIF send error:', error);
+      setLastResponse('Error: ' + error.message);
+      setUploading(false);
+      setIsPlayingGif(false);
+    }
+  }
+
+  async function stopGif() {
+    try {
+      let host = device.host.trim().replace(/^https?:\/\//i, '').replace(/\/+$/,'');
+      await fetch(`http://${host}/stopGif`);
+      setIsPlayingGif(false);
+      setLastResponse('GIF stopped');
+    } catch (error) {
+      console.error('Stop GIF error:', error);
+      setLastResponse('Error stopping GIF: ' + error.message);
+    }
+  }
+
+  async function onRefresh() {
+    setRefreshing(true);
+    try {
+      // Refresh all sensor data
+      await Promise.all([
+        fetchDHTData(),
+        fetchPIRData()
+      ]);
+      setLastResponse('Data refreshed');
+    } catch (error) {
+      console.error('Refresh error:', error);
+      setLastResponse('Refresh failed');
+    } finally {
+      setRefreshing(false);
     }
   }
 
@@ -420,7 +481,18 @@ export default function DeviceTabScreen_Enhanced({ route }) {
   return (
     <ImageBackground source={bgImage} style={styles.bgImage} blurRadius={10}>
       <SafeAreaView style={styles.safeArea}>
-        <ScrollView contentContainerStyle={styles.container}>
+        <ScrollView 
+          contentContainerStyle={styles.container}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor="#fff"
+              colors={['#fff']}
+              progressBackgroundColor="rgba(0, 0, 0, 0.5)"
+            />
+          }
+        >
           <View style={styles.header}>
             <Image source={logoImage} style={styles.logo} />
             <View>
@@ -443,22 +515,65 @@ export default function DeviceTabScreen_Enhanced({ route }) {
 
           {/* Image Upload Section */}
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>🖼️ Display Image</Text>
+            <Text style={styles.cardTitle}>📸 Display Image</Text>
             <View style={styles.imageButtonContainer}>
               <TouchableOpacity 
                 style={[styles.imageButton, uploading && styles.imageButtonDisabled]} 
                 onPress={sendSimpleImage}
-                disabled={uploading}
+                disabled={uploading || isPlayingGif}
               >
-                <Text style={styles.imageButtonIcon}>📸</Text>
+                <Text style={styles.imageButtonIcon}>🖼️</Text>
                 <Text style={styles.imageButtonText}>
                   {uploading ? 'Uploading...' : 'Pick & Send Image'}
                 </Text>
               </TouchableOpacity>
             </View>
-            {uploading && (
+            {uploading && !isPlayingGif && (
               <ActivityIndicator size="small" color="#fff" style={{ marginTop: 10 }} />
             )}
+          </View>
+
+          {/* GIF Playback Section */}
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>🎬 Play Animated GIF</Text>
+            <Text style={styles.gifDescription}>
+              Select a GIF file to play on the ESP32 display with smooth animation (10+ FPS)
+            </Text>
+            
+            <View style={styles.gifButtonContainer}>
+              <TouchableOpacity 
+                style={[styles.gifButton, (uploading || isPlayingGif) && styles.imageButtonDisabled]}
+                onPress={sendGif}
+                disabled={uploading || isPlayingGif}
+              >
+                <Text style={styles.gifButtonIcon}>🎞️</Text>
+                <Text style={styles.gifButtonText}>
+                  {uploading ? 'Uploading GIF...' : 'Select GIF File'}
+                </Text>
+              </TouchableOpacity>
+              
+              {isPlayingGif && (
+                <TouchableOpacity 
+                  style={[styles.gifButton, styles.stopGifButton]}
+                  onPress={stopGif}
+                >
+                  <Text style={styles.gifButtonIcon}>⏹</Text>
+                  <Text style={styles.gifButtonText}>Stop GIF</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            
+            {isPlayingGif && (
+              <View style={styles.gifStatusContainer}>
+                <Text style={styles.gifStatusText}>▶️ GIF is playing on device...</Text>
+              </View>
+            )}
+            
+            <View style={styles.gifInfo}>
+              <Text style={styles.gifInfoText}>• Optimized for 320x240 display</Text>
+              <Text style={styles.gifInfoText}>• Smooth playback at 10+ FPS</Text>
+              <Text style={styles.gifInfoText}>• Keep GIF files under 150KB (ESP32 memory limit)</Text>
+            </View>
           </View>
 
           <View style={styles.card}>
@@ -549,7 +664,7 @@ const styles = StyleSheet.create({
   subtitle: { color: 'rgba(255, 255, 255, 0.7)', fontSize: 14, marginTop: 2 },
   card: { backgroundColor: 'rgba(0, 0, 0, 0.3)', borderRadius: 20, padding: 20, marginBottom: 20, borderColor: 'rgba(255, 255, 255, 0.2)', borderWidth: 1 },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
-  cardTitle: { fontSize: 18, fontWeight: '600', color: '#fff' },
+  cardTitle: { fontSize: 18, fontWeight: '600', color: '#fff', marginBottom: 15 },
   emptyText: { color: 'rgba(255, 255, 255, 0.6)', fontSize: 14, marginTop: 10, textAlign: 'center' },
   actionButton: { paddingVertical: 12, paddingHorizontal: 20, borderRadius: 15, marginRight: 10, alignItems: 'center', justifyContent: 'center', minWidth: 100 },
   actionIcon: { width: 24, height: 24, marginBottom: 5 },
@@ -587,5 +702,59 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '600',
     fontSize: 16,
+  },
+  gifDescription: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 14,
+    marginBottom: 15,
+    lineHeight: 20,
+  },
+  gifButtonContainer: {
+    marginTop: 10,
+  },
+  gifButton: {
+    backgroundColor: 'rgba(255, 149, 0, 0.8)',
+    paddingVertical: 15,
+    paddingHorizontal: 20,
+    borderRadius: 15,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+  },
+  stopGifButton: {
+    backgroundColor: 'rgba(255, 59, 48, 0.9)',
+  },
+  gifButtonIcon: {
+    fontSize: 24,
+    marginRight: 10,
+  },
+  gifButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 16,
+  },
+  gifStatusContainer: {
+    backgroundColor: 'rgba(76, 217, 100, 0.2)',
+    padding: 15,
+    borderRadius: 10,
+    marginTop: 10,
+    alignItems: 'center',
+  },
+  gifStatusText: {
+    color: '#4CD964',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  gifInfo: {
+    marginTop: 15,
+    padding: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 10,
+  },
+  gifInfoText: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 12,
+    marginVertical: 2,
   },
 });
