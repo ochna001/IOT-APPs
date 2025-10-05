@@ -22,6 +22,8 @@
 #include <SPI.h>
 #include <JPEGDEC.h>
 #include <AnimatedGIF.h>
+#include <Wire.h>
+#include <BH1750.h>
 
 const char* apSSID = "ESP32-Setup";
 const int LED_PIN = 2;
@@ -38,6 +40,7 @@ DNSServer dnsServer;
 Preferences prefs;
 DHT dht(DHT_PIN, DHT_TYPE);
 Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
+BH1750 lightMeter;
 
 String storedSSID = "";
 String storedPass = "";
@@ -174,6 +177,17 @@ void updateDisplay() {
   tft.setTextColor(ST77XX_WHITE);
   tft.print("LED: ");
   tft.println(digitalRead(LED_PIN) ? "ON" : "OFF");
+
+  float lux = lightMeter.readLightLevel();
+  tft.setCursor(10, 190);
+  tft.setTextColor(ST77XX_MAGENTA);
+  tft.print("Light: ");
+  if (lux >= 0) {
+    tft.print(lux, 0);
+    tft.println(" lx");
+  } else {
+    tft.println("ERROR");
+  }
 }
 
 // ===== Base64 Decoder =====
@@ -286,6 +300,16 @@ void handleDHT() {
   
   String response = "temperature:" + String(t, 1) + "\n";
   response += "humidity:" + String(h, 1);
+  sendPlain(200, response);
+}
+
+void handleLight() {
+  float lux = lightMeter.readLightLevel();
+  if (lux < 0) {
+    sendPlain(500, "Failed to read from BH1750 sensor");
+    return;
+  }
+  String response = "light:" + String(lux, 2);
   sendPlain(200, response);
 }
 
@@ -663,6 +687,7 @@ void startWebServer() {
   server.on("/off", handleOff);
   server.on("/status", handleStatus);
   server.on("/dht", handleDHT);
+  server.on("/light", handleLight);
   server.on("/display", handleDisplay);
   server.on("/imageChunk", handleImageChunk);
   server.on("/displayImage", handleDisplayImage);
@@ -772,6 +797,14 @@ void setup() {
   
   initDisplay();
   dht.begin();
+
+  // Initialize I2C for BH1750 (SDA=GPIO25, SCL=GPIO26)
+  Wire.begin(25, 26);
+  if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)) {
+    Serial.println("BH1750 initialized successfully (SDA=25, SCL=26)");
+  } else {
+    Serial.println("ERROR: BH1750 initialization failed!");
+  }
   
   Serial.println("DHT22 initialized");
   Serial.print("Total heap: ");

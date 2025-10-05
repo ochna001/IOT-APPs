@@ -1,0 +1,131 @@
+========================================
+DFPLAYER MINI - COPY/PASTE CODE BLOCKS
+========================================
+
+STEP 1: After line 24 (after #include <AnimatedGIF.h>)
+--------------------------------------------------------
+#include <DFMiniMp3.h>
+
+
+STEP 2: After line 34 (after #define TFT_RST   17)
+--------------------------------------------------------
+
+// DFPlayer Mini UART pins (avoid conflicts with TFT/DHT/SPI)
+// ESP32 TX (to DFPlayer RX) and ESP32 RX (from DFPlayer TX)
+#define MP3_TX_PIN 27
+#define MP3_RX_PIN 26
+
+
+STEP 3: After line 60 (after AnimatedGIF gif;)
+--------------------------------------------------------
+
+// ===== DFPlayer Mini (DFMiniMp3) =====
+// Use UART2 with custom pins
+HardwareSerial MP3Serial(2);
+
+class Mp3Notify {
+public:
+  static void OnError([[maybe_unused]] DFMiniMp3<HardwareSerial, Mp3Notify>& mp3, uint16_t errorCode) {
+    Serial.print("DFMiniMp3 Error "); Serial.println(errorCode);
+  }
+  static void OnPlayFinished([[maybe_unused]] DFMiniMp3<HardwareSerial, Mp3Notify>& mp3, 
+                             [[maybe_unused]] DfMp3_PlaySources source, 
+                             uint16_t track) {
+    Serial.print("DFMiniMp3 Finished track "); Serial.println(track);
+  }
+  static void OnPlaySourceOnline([[maybe_unused]] DFMiniMp3<HardwareSerial, Mp3Notify>& mp3, 
+                                 [[maybe_unused]] DfMp3_PlaySources source) {
+    Serial.println("DFMiniMp3 Source online");
+  }
+  static void OnPlaySourceInserted([[maybe_unused]] DFMiniMp3<HardwareSerial, Mp3Notify>& mp3, 
+                                   [[maybe_unused]] DfMp3_PlaySources source) {
+    Serial.println("DFMiniMp3 Source inserted");
+  }
+  static void OnPlaySourceRemoved([[maybe_unused]] DFMiniMp3<HardwareSerial, Mp3Notify>& mp3, 
+                                  [[maybe_unused]] DfMp3_PlaySources source) {
+    Serial.println("DFMiniMp3 Source removed");
+  }
+};
+
+DFMiniMp3<HardwareSerial, Mp3Notify> mp3(MP3Serial);
+
+
+STEP 4: After line 347 (after displayAlert() function closes with })
+--------------------------------------------------------
+
+// ===== MP3 HTTP Handlers =====
+void handleMp3Play() {
+  int track = 1;
+  if (server.hasArg("track")) {
+    track = server.arg("track").toInt();
+    if (track <= 0) track = 1;
+  }
+  // Play from /MP3 folder: files should be 0001.mp3, 0002.mp3, ...
+  mp3.playMp3FolderTrack(track);
+  sendPlain(200, String("Playing track ") + track);
+}
+
+void handleMp3Stop() {
+  mp3.stop();
+  sendPlain(200, "Stopped");
+}
+
+void handleMp3Volume() {
+  if (!server.hasArg("v")) {
+    sendPlain(400, "Missing v (0-30)");
+    return;
+  }
+  int v = server.arg("v").toInt();
+  if (v < 0) v = 0;
+  if (v > 30) v = 30;
+  mp3.setVolume(v);
+  sendPlain(200, String("Volume ") + v);
+}
+
+
+STEP 5: After line 669 (after server.on("/displayText", handleDisplayText);)
+--------------------------------------------------------
+  
+  // MP3 endpoints
+  server.on("/mp3/play", handleMp3Play);
+  server.on("/mp3/stop", handleMp3Stop);
+  server.on("/mp3/volume", handleMp3Volume);
+
+
+STEP 6: After line 780 (after Serial.println(ESP.getFreeHeap());)
+--------------------------------------------------------
+  
+  // Initialize DFPlayer Mini on UART2
+  MP3Serial.begin(9600, SERIAL_8N1, MP3_RX_PIN, MP3_TX_PIN);
+  delay(200);
+  mp3.begin();
+  mp3.setVolume(20); // 0-30
+  Serial.println("DFMiniMp3 initialized on UART2 (RX=26, TX=27)");
+
+
+STEP 7: Inside loop() function, before the closing }
+--------------------------------------------------------
+  // DFPlayer background tasks
+  mp3.loop();
+
+
+========================================
+DONE! Now compile and upload.
+========================================
+
+API ENDPOINTS:
+- GET http://<device-ip>/mp3/play?track=1
+- GET http://<device-ip>/mp3/stop
+- GET http://<device-ip>/mp3/volume?v=20
+
+WIRING:
+- DFPlayer VCC → 5V
+- DFPlayer GND → GND
+- DFPlayer RX → ESP32 GPIO27 (through 1K resistor)
+- DFPlayer TX → ESP32 GPIO26
+- DFPlayer SPK+/SPK- → Speaker
+
+SD CARD:
+- Format as FAT32
+- Create /MP3 folder
+- Add files: 0001.mp3, 0002.mp3, etc.

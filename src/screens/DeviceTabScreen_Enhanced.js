@@ -57,9 +57,11 @@ export default function DeviceTabScreen_Enhanced({ route }) {
   const [ledStatus, setLedStatus] = useState('Unknown');
   const [temperature, setTemperature] = useState(null);
   const [humidity, setHumidity] = useState(null);
+  const [lightLevel, setLightLevel] = useState(null);
   const [motionStatus, setMotionStatus] = useState('unknown');
   const [lastUpdate, setLastUpdate] = useState(null);
   const [lastMotionUpdate, setLastMotionUpdate] = useState(null);
+  const [lastLightUpdate, setLastLightUpdate] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [isPlayingGif, setIsPlayingGif] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -109,6 +111,15 @@ export default function DeviceTabScreen_Enhanced({ route }) {
     const interval = setInterval(() => {
       fetchPIRData();
     }, 2000);
+    return () => clearInterval(interval);
+  }, [device]);
+
+  useEffect(() => {
+    if (!device || !device.host) return;
+    fetchLightData();
+    const interval = setInterval(() => {
+      fetchLightData();
+    }, 5000);
     return () => clearInterval(interval);
   }, [device]);
 
@@ -165,6 +176,25 @@ export default function DeviceTabScreen_Enhanced({ route }) {
     }
   }
 
+  async function fetchLightData() {
+    if (!device || !device.host) return;
+    try {
+      let host = device.host.trim().replace(/^https?:\/\//i, '').replace(/\/+$/,'');
+      const url = `http://${host}/light`;
+      const r = await fetch(url);
+      const text = await r.text();
+      
+      const parts = text.trim().split(':');
+      if (parts.length === 2 && parts[0].toLowerCase() === 'light') {
+        const lux = parseFloat(parts[1].trim());
+        setLightLevel(lux);
+        setLastLightUpdate(Date.now());
+      }
+    } catch (e) {
+      console.log('Light fetch error:', e.message);
+    }
+  }
+
   async function callPath(path) {
     setLastResponse('Calling ' + path + '...');
     if (!device || !device.host) return setLastResponse('Error: device host not set');
@@ -191,6 +221,12 @@ export default function DeviceTabScreen_Enhanced({ route }) {
       if (path === 'pir') {
         await fetchPIRData();
         setLastResponse('PIR data refreshed.');
+        return;
+      }
+
+      if (path === 'light') {
+        await fetchLightData();
+        setLastResponse('Light data refreshed.');
         return;
       }
       
@@ -579,7 +615,7 @@ export default function DeviceTabScreen_Enhanced({ route }) {
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <Text style={styles.cardTitle}>Sensor Readings</Text>
-              <TouchableOpacity onPress={() => { fetchDHTData(); fetchPIRData(); }} style={styles.refreshButton}>
+              <TouchableOpacity onPress={() => { fetchDHTData(); fetchPIRData(); fetchLightData(); }} style={styles.refreshButton}>
                 <Text style={styles.refreshButtonText}>Refresh</Text>
               </TouchableOpacity>
             </View>
@@ -604,6 +640,18 @@ export default function DeviceTabScreen_Enhanced({ route }) {
                     <Text style={styles.statusValue}>{humidity.toFixed(1)}%</Text>
                     {lastUpdate && (
                       <Text style={styles.statusTime}>{new Date(lastUpdate).toLocaleTimeString()}</Text>
+                    )}
+                  </View>
+                </View>
+              )}
+
+              {lightLevel !== null && (
+                <View style={styles.statusRow}>
+                  <Text style={styles.statusLabel}>☀️ Light</Text>
+                  <View style={styles.statusValueWrapper}>
+                    <Text style={styles.statusValue}>{lightLevel.toFixed(0)} lx</Text>
+                    {lastLightUpdate && (
+                      <Text style={styles.statusTime}>{new Date(lastLightUpdate).toLocaleTimeString()}</Text>
                     )}
                   </View>
                 </View>
@@ -637,7 +685,7 @@ export default function DeviceTabScreen_Enhanced({ route }) {
                 </View>
               </View>
               
-              {temperature === null && humidity === null && motionStatus === 'unknown' && (
+              {temperature === null && humidity === null && motionStatus === 'unknown' && lightLevel === null && (
                 <Text style={styles.emptyText}>Waiting for sensor data...</Text>
               )}
             </View>
@@ -756,5 +804,6 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.7)',
     fontSize: 12,
     marginVertical: 2,
+    textAlign: 'center',
   },
 });
